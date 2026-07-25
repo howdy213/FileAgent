@@ -32,6 +32,7 @@ vector<wstring> g_skipBackupRoots;
 wstring g_backupStorePath;
 vector<wstring> g_extensions = DEFAULT_EXTENSIONS;
 bool g_openCopy = false;
+bool g_overwrite = true;
 bool g_addTimestamp = true;
 
 static wstring JoinPaths(const vector<wstring>& paths) {
@@ -49,6 +50,7 @@ void LoadConfig() {
 	INIStructure data;
 
 	if (!fs::exists(iniPath)) {
+		data[TS("Settings")][TS("Overwrite")] = TS("true");
 		data[TS("Settings")][TS("BackupRoot")] = TS("");   // 空表示不跳过
 		data[TS("Settings")][TS("BackupDir")] = (wstring)L".\\" + DEFAULT_BACKUP_DIR_NAME;
 		data[TS("Settings")][TS("OpenCopy")] = TS("false");
@@ -63,6 +65,7 @@ void LoadConfig() {
 		logger.DLog(LogLevel::Info, L"创建默认配置文件: " + iniPath.wstring());
 
 		// 设置默认值
+		g_overwrite = true;
 		g_skipBackupRoots.clear();
 		g_backupStorePath = (GetCurrentProcessFSDir() / DEFAULT_BACKUP_DIR_NAME).wstring();
 		g_extensions = DEFAULT_EXTENSIONS;
@@ -73,6 +76,7 @@ void LoadConfig() {
 
 	if (!ini.read(data)) {
 		logger.DLog(LogLevel::Error, L"读取配置文件失败，使用默认配置（不跳过任何目录）");
+		g_overwrite = true;
 		g_skipBackupRoots.clear();
 		g_backupStorePath = (GetCurrentProcessFSDir() / DEFAULT_BACKUP_DIR_NAME).wstring();
 		g_extensions = DEFAULT_EXTENSIONS;
@@ -118,6 +122,9 @@ void LoadConfig() {
 	if (storeDir.empty()) storeDir = DEFAULT_BACKUP_DIR_NAME;
 	fs::path storePath = ResolveFSPath(storeDir, GetCurrentProcessFSDir());
 	g_backupStorePath = storePath.wstring();
+
+	// --------- Overwrite ----------
+	g_overwrite = settings.get_as<bool>(TS("Overwrite"), true);
 
 	// ---------- OpenCopy ----------
 	g_openCopy = settings.get_as<bool>(TS("OpenCopy"), false);

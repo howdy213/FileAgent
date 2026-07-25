@@ -248,7 +248,7 @@ void AgentOpen(const wstring& filePath) {
         return;
     }
 
-    // ---- 合并跳过备份判断 ----
+    // ---- 跳过备份判断 ----
     bool shouldSkipBackup = false;
     if (!g_skipBackupRoots.empty() && IsPathUnderAnyRoot(filePath, g_skipBackupRoots)) {
         shouldSkipBackup = true;
@@ -267,20 +267,39 @@ void AgentOpen(const wstring& filePath) {
         // 执行备份
         EnsureBackupDir();
         wstring backupPath = MakeBackupPath(filePath);
-        bool backupOk = CopyFileW(filePath.c_str(), backupPath.c_str(), FALSE); // FALSE = 覆盖
-        if (!backupOk) {
-            logger.DLog(LogLevel::Warn, L"备份文件失败，将继续尝试打开原件");
-            backupPath = filePath; // 备份失败，回退
+
+        bool backupExists = fs::exists(backupPath);
+        bool performBackup = true;
+
+        if (backupExists && !g_overwrite) {
+            logger.DLog(LogLevel::Info, L"备份文件已存在且 Overwrite=false，跳过备份: " + backupPath);
+            performBackup = false;
+        }
+
+        if (performBackup) {
+            // FALSE 表示覆盖已有文件（CopyFile 的 bFailIfExists 参数）
+            bool backupOk = CopyFileW(filePath.c_str(), backupPath.c_str(), FALSE);
+            if (!backupOk) {
+                logger.DLog(LogLevel::Warn, L"备份文件失败，将继续尝试打开原件");
+                // backupOk 失败时 targetFile 保持为原件（默认）
+            }
+            else {
+                logger.DLog(LogLevel::Info, L"备份成功: " + backupPath);
+                if (g_openCopy) {
+                    targetFile = backupPath;
+                    logger.DLog(LogLevel::Info, L"配置为打开副本: " + targetFile);
+                }
+            }
         }
         else {
-            logger.DLog(LogLevel::Info, L"备份成功: " + backupPath);
+            // 跳过备份：targetFile 保持为原件
             if (g_openCopy) {
-                targetFile = backupPath;
-                logger.DLog(LogLevel::Info, L"配置为打开副本: " + targetFile);
+                logger.DLog(LogLevel::Warn, L"由于 Overwrite=false 且备份文件已存在，无法打开副本，将打开原件");
             }
         }
     }
 
+    // ---- 获取原始打开命令 ----
     fs::path p(filePath);
     wstring ext = p.extension().wstring();
     for (auto& c : ext) c = towlower(c);
@@ -304,10 +323,11 @@ void AgentOpen(const wstring& filePath) {
 
     if (originalCommand.empty()) {
         logger.DLog(LogLevel::Error, L"无法找到原始打开程序");
+        MessageBoxW(nullptr, L"无法找到该文件类型的关联程序，请检查注册表。", L"错误", MB_ICONERROR);
         return;
     }
 
-    // 替换 %1
+    // ---- 替换 %1 并启动 ----
     wstring command = originalCommand;
     wstring targetWithQuotes = L"\"" + targetFile + L"\"";
 
@@ -325,7 +345,6 @@ void AgentOpen(const wstring& filePath) {
         }
     }
 
-    // 启动程序
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
     si.dwFlags = STARTF_USESHOWWINDOW;

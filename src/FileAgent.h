@@ -43,6 +43,7 @@ inline const std::wstring USER_CHOICE_PROGID = L"Progid";
 
 // ==================== 全局变量（extern 声明） ====================
 extern WinUtils::Logger logger;
+extern bool g_overwrite;
 extern std::vector<std::wstring> g_skipBackupRoots;   // 若文件在此目录下，则跳过备份（可为空）
 extern std::wstring g_backupStorePath;  // 备份存储目录（绝对路径）
 extern std::vector<std::wstring> g_extensions; // 要处理的扩展名列表
