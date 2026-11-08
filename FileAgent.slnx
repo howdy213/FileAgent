@@ -1,0 +1,9 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="deps/WinUtils/WinUtils.vcxproj" Id="dff34332-c7db-4db1-b464-1d2313a45af0" />
+  <Project Path="src/FAConfig/FAConfig.vcxproj" Id="30f251d8-a896-4744-9f63-ec9997c534a2" />
+  <Project Path="src/FileAgent/FileAgent.vcxproj" />
+</Solution>
