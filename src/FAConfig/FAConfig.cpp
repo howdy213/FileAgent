@@ -318,7 +318,6 @@ static void FinishCellEdit(bool save) {
 					continuePath = true;
 				}
 			} else if (subItem == 1) {
-				// 路径允许留空，稍后可双击或使用“浏览...”填写
 				entry.path = text;
 			}
 
