@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -30,6 +30,7 @@
 // ==================== 常量 ====================
 inline const std::wstring FA_CONFIG_FILE_NAME = L"FAConfig.ini";
 inline const std::wstring FILE_AGENT_INI_NAME = L"FileAgent.ini";
+inline const std::wstring FILE_AGENT_EXE_NAME = L"FileAgent.exe";
 inline const std::wstring FA_CONFIG_SETTINGS = L"Settings";
 inline const std::wstring FA_CONFIG_ALIASES = L"Aliases";
 
@@ -59,6 +60,32 @@ bool SetCommandEnabled(bool enabled);
 
 // ==================== FileAgent.ini 修改 ====================
 bool WriteFileAgentSetting(const std::wstring& key, const std::wstring& value);
+
+// FileAgent.ini 的 [Settings] 配置
+struct FileAgentSettings {
+	std::wstring backupDir = L".\\AutoSaveBackup";
+	std::wstring backupRoot;
+	std::wstring extensions = L".doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf";
+	std::wstring enaPath;   // 备份成功后弹出通知的 exe 路径（可留空）
+	bool overwrite = true;
+	bool openCopy = false;
+	bool addTimestamp = true;
+};
+
+// 读取 FileAgent.ini（不存在时创建默认文件）
+FileAgentSettings LoadFileAgentSettings();
+// 写入 FileAgent.ini（保留其它键）
+bool SaveFileAgentSettings(const FileAgentSettings& settings);
+
+// ==================== 注册状态（委托 FileAgent.exe） ====================
+// 查询 FileAgent 是否已安装（退出码 0 = 已安装）
+bool IsRegistered();
+// 调用 FileAgent.exe install
+bool RegisterToSystem();
+// 调用 FileAgent.exe uninstall
+bool UnregisterFromSystem();
+// 注册状态描述，例如“已注册（FileAgent 已安装）”
+std::wstring GetRegistrationSummary();
 
 // ==================== 入口 ====================
 // 处理命令行；返回进程退出码

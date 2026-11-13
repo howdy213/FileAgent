@@ -1,4 +1,4 @@
-/*
+ï»¿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -16,45 +16,65 @@
  * You should have received a copy of the GNU General Public License
  * along with FileAgent. If not, see <https://www.gnu.org/licenses/>.
  *
- * ³ÌĞòÈë¿Ú£¬½âÎöÃüÁîĞĞ²¢Ö´ĞĞÏàÓ¦²Ù×÷
+ * ç¨‹åºå…¥å£ï¼Œè§£æå‘½ä»¤è¡Œå¹¶æ‰§è¡Œç›¸åº”æ“ä½œ
  */
 
 #include "FileAgent.h"
 #include "WinUtils/CmdParser.h"
 #include "WinUtils/Logger.h"
+
+#include <cwctype>
 using namespace std;
 
 using namespace WinUtils;
 
 int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR lpCmdLine, int) {
-    // ÉèÖÃÈÕÖ¾£¨ÈÕÖ¾ÎÄ¼şÎ»ÓÚ³ÌĞòÄ¿Â¼£©
+    // è®¾ç½®æ—¥å¿—ï¼ˆæ—¥å¿—æ–‡ä»¶ä½äºç¨‹åºç›®å½•ï¼‰
     LoggerCore::Inst().SetDefaultStrategies((GetCurrentProcessFSDir() / (APP_NAME + L".log")).wstring());
     LoggerCore::Inst().EnableAllApartments();
-    logger.DLog(LogLevel::Info, L"³ÌĞòÆô¶¯");
+    logger.DLog(LogLevel::Info, L"ç¨‹åºå¯åŠ¨");
 
-    // ¼ÓÔØÅäÖÃ
+    // åŠ è½½é…ç½®
     LoadConfig();
 
-    // ½âÎöÃüÁîĞĞ
-    CmdParser parser(false); // ²»Çø·Ö´óĞ¡Ğ´
+    // è§£æå‘½ä»¤è¡Œ
+    CmdParser parser(false); // ä¸åŒºåˆ†å¤§å°å†™
     wstring cmdLine = lpCmdLine ? lpCmdLine : L"";
     if (!parser.parse(cmdLine, CmdParser::ParseMode::Normal)) {
-        logger.Log(LogLevel::Error, L"ÃüÁîĞĞ½âÎöÊ§°Ü");
+        logger.Log(LogLevel::Error, L"å‘½ä»¤è¡Œè§£æå¤±è´¥");
         return 1;
     }
 
+    if (parser.hasCommand(TS("status")) || parser.hasCommand(TS("isinstalled"))) {
+        // é™é»˜æŸ¥è¯¢å®‰è£…çŠ¶æ€ï¼Œä»…é€šè¿‡é€€å‡ºç è¿”å›ï¼š0 = å·²å®‰è£…ï¼Œ1 = æœªå®‰è£…
+        return IsInstalled() ? 0 : 1;
+    }
+
     if (parser.hasCommand(TS("install"))) {
-        Install();
+        return Install() ? 0 : 1;
     }
     else if (parser.hasCommand(TS("uninstall"))) {
-        Uninstall();
+        return Uninstall() ? 0 : 1;
     }
     else {
-        // ÎŞÃüÁîÊ±£¬È¡µÚÒ»¸ö²ÎÊı×÷ÎªÎÄ¼şÂ·¾¶
+        // æ— å‘½ä»¤æ—¶ï¼Œå–ç¬¬ä¸€ä¸ªå‚æ•°ä½œä¸ºæ–‡ä»¶è·¯å¾„
         auto params = parser.getParams(TS(""));
         if (!params.empty()) {
+            // å…¼å®¹ä¸å¸¦å‰ç¼€çš„è£¸å‘½ä»¤ï¼ˆinstall / uninstall / statusï¼‰
+            wstring bare = params[0];
+            for (auto& c : bare) c = static_cast<wchar_t>(towlower(c));
+            if (bare == L"status" || bare == L"isinstalled") {
+                return IsInstalled() ? 0 : 1;
+            }
+            if (bare == L"install") {
+                return Install() ? 0 : 1;
+            }
+            if (bare == L"uninstall") {
+                return Uninstall() ? 0 : 1;
+            }
+
             wstring path = params[0];
-            // È¥³ı¿ÉÄÜµÄÊ×Î²ÒıºÅ
+            // å»é™¤å¯èƒ½çš„é¦–å°¾å¼•å·
             if (!path.empty() && path.front() == L'\"' && path.back() == L'\"') {
                 path = path.substr(1, path.size() - 2);
             }
@@ -63,10 +83,10 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR lpCmdLine, int) {
             }
         }
         else {
-            logger.Log(LogLevel::Info, L"ÎŞÓĞĞ§²ÎÊı£¬³ÌĞòÍË³ö");
+            logger.Log(LogLevel::Info, L"æ— æœ‰æ•ˆå‚æ•°ï¼Œç¨‹åºé€€å‡º");
         }
     }
 
-    logger.DLog(LogLevel::Info, L"³ÌĞòÍË³ö");
+    logger.DLog(LogLevel::Info, L"ç¨‹åºé€€å‡º");
     return 0;
 }

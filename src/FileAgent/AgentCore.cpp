@@ -1,4 +1,4 @@
-/*
+ï»¿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with FileAgent. If not, see <https://www.gnu.org/licenses/>.
  *
- * ÊµÏÖ°²×°¡¢Ğ¶ÔØ¡¢´úÀí´ò¿ª¼°Â·¾¶¸¨Öúº¯Êı
+ * å®ç°å®‰è£…ã€å¸è½½ã€ä»£ç†æ‰“å¼€åŠè·¯å¾„è¾…åŠ©å‡½æ•°
  */
 #include "FileAgent.h"
 #include "WinUtils/WinUtils.h"
@@ -29,7 +29,7 @@ using namespace std;
 using namespace WinUtils;
 namespace fs = filesystem;
 
-// ==================== Â·¾¶¸¨Öú ====================
+// ==================== è·¯å¾„è¾…åŠ© ====================
 wstring MakeBackupPath(const wstring& sourceFile) {
     fs::path src(sourceFile);
     wstring backupName;
@@ -54,7 +54,28 @@ void EnsureBackupDir() {
     if (!fs::exists(dir)) fs::create_directories(dir);
 }
 
-// ==================== °²×°×´Ì¬ ====================
+// ==================== å¤‡ä»½é€šçŸ¥ ====================
+// å¯åŠ¨ EnaPath æŒ‡å‘çš„ç¨‹åºå¹¶ä¼ å…¥ -toast "æ¶ˆæ¯"ï¼Œä¸ç­‰å¾…å…¶é€€å‡º
+static void ShowBackupToast(const wstring& message) {
+    if (g_enaPath.empty()) return;
+
+    const wstring commandLine = L"\"" + g_enaPath + L"\" -toast \"" + message + L"\"";
+    vector<WCHAR> buffer(commandLine.begin(), commandLine.end());
+    buffer.push_back(L'\0');
+
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = {};
+    if (CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE,
+        0, nullptr, fs::path(g_enaPath).parent_path().c_str(), &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+    else {
+        logger.DLog(LogLevel::Warn, L"å¯åŠ¨é€šçŸ¥ç¨‹åºå¤±è´¥: " + g_enaPath);
+    }
+}
+
+// ==================== å®‰è£…çŠ¶æ€ ====================
 bool IsInstalled() {
     return ReadRegString(HKEY_CURRENT_USER, REG_KEY_PATH, REG_INSTALLED_VALUE) == L"1";
 }
@@ -72,11 +93,11 @@ void RemoveInstalledFlag() {
     catch (...) { /* ignore */ }
 }
 
-// ==================== °²×° ====================
+// ==================== å®‰è£… ====================
 bool Install() {
     if (IsInstalled()) {
-        MessageBoxW(nullptr, L"FileAgent ÒÑ¾­°²×°£¬ÎŞĞèÖØ¸´²Ù×÷¡£ÈôĞè¸üĞÂ£¬ÇëÏÈÖ´ĞĞ /uninstall¡£",
-            L"ÌáÊ¾", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(nullptr, L"FileAgent å·²ç»å®‰è£…ï¼Œæ— éœ€é‡å¤æ“ä½œã€‚è‹¥éœ€æ›´æ–°ï¼Œè¯·å…ˆæ‰§è¡Œ /uninstallã€‚",
+            L"æç¤º", MB_OK | MB_ICONINFORMATION);
         return true;
     }
 
@@ -84,15 +105,15 @@ bool Install() {
     wstring myCommand = L"\"" + myPath + L"\" \"%1\"";
 
     for (const auto& ext : g_extensions) {
-        wstring progId = GetProgID(ext);   // ÓÅÏÈ´Ó UserChoice ¶ÁÈ¡
+        wstring progId = GetProgID(ext);   // ä¼˜å…ˆä» UserChoice è¯»å–
 
         if (!progId.empty()) {
-            // ---- ÓĞ ProgID£ºĞŞ¸Ä¸Ã ProgID µÄ command ----
+            // ---- æœ‰ ProgIDï¼šä¿®æ”¹è¯¥ ProgID çš„ command ----
             wstring userProgKey = L"Software\\Classes\\" + progId;
             wstring userCommandKey = userProgKey + L"\\shell\\open\\command";
             wstring userIconKey = userProgKey + L"\\DefaultIcon";
 
-            // È·±£ HKCU ÖĞ´æÔÚÃüÁîºÍÍ¼±ê¼ü£¨ÈôÃ»ÓĞÔò´Ó HKCR ¸´ÖÆ£©
+            // ç¡®ä¿ HKCU ä¸­å­˜åœ¨å‘½ä»¤å’Œå›¾æ ‡é”®ï¼ˆè‹¥æ²¡æœ‰åˆ™ä» HKCR å¤åˆ¶ï¼‰
             HKEY hTest;
             if (RegOpenKeyExW(HKEY_CURRENT_USER, userCommandKey.c_str(), 0, KEY_READ, &hTest) != ERROR_SUCCESS) {
                 CopyRegistryKey(HKEY_CLASSES_ROOT, progId + L"\\shell\\open\\command",
@@ -109,25 +130,25 @@ bool Install() {
                 RegCloseKey(hTest);
             }
 
-            // ±¸·İÔ­Ê¼ÃüÁî
+            // å¤‡ä»½åŸå§‹å‘½ä»¤
             if (ReadRegString(HKEY_CURRENT_USER, userCommandKey, L"OriginalCommand").empty()) {
                 wstring current = ReadRegString(HKEY_CURRENT_USER, userCommandKey, L"");
                 WriteRegString(HKEY_CURRENT_USER, userCommandKey, L"OriginalCommand", current);
             }
 
-            // Ğ´ÈëĞÂÃüÁî
+            // å†™å…¥æ–°å‘½ä»¤
             if (!WriteRegString(HKEY_CURRENT_USER, userCommandKey, L"", myCommand)) {
-                logger.Log(LogLevel::Error, format(L"°²×°Ê§°Ü£ºÎŞ·¨Ğ´ÈëÃüÁî¼ü {}", userCommandKey));
+                logger.Log(LogLevel::Error, format(L"å®‰è£…å¤±è´¥ï¼šæ— æ³•å†™å…¥å‘½ä»¤é”® {}", userCommandKey));
                 return false;
             }
-            logger.Log(LogLevel::Info, format(L"ÒÑÎªÀ©Õ¹ {} Í¨¹ı ProgID {} ÉèÖÃÃüÁî", ext, progId));
+            logger.Log(LogLevel::Info, format(L"å·²ä¸ºæ‰©å±• {} é€šè¿‡ ProgID {} è®¾ç½®å‘½ä»¤", ext, progId));
 
-            // ´æ´¢Êµ¼ÊÊ¹ÓÃµÄ ProgID£¬ÓÃÓÚĞ¶ÔØÊ±»Ö¸´
+            // å­˜å‚¨å®é™…ä½¿ç”¨çš„ ProgIDï¼Œç”¨äºå¸è½½æ—¶æ¢å¤
             wstring storedProgidKey = L"InstalledProgid_" + ext.substr(1);
             WriteRegString(HKEY_CURRENT_USER, REG_KEY_PATH, storedProgidKey, progId);
         }
         else {
-            // ---- ÎŞ ProgID£º½öĞŞ¸Ä HKCU\Classes\<ext>\shell\open\command ----
+            // ---- æ—  ProgIDï¼šä»…ä¿®æ”¹ HKCU\Classes\<ext>\shell\open\command ----
             wstring userCommandKey = L"Software\\Classes\\" + ext + L"\\shell\\open\\command";
 
             wstring original = ReadRegString(HKEY_CURRENT_USER, userCommandKey, L"");
@@ -142,35 +163,35 @@ bool Install() {
             }
 
             if (!WriteRegString(HKEY_CURRENT_USER, userCommandKey, L"", myCommand)) {
-                logger.Log(LogLevel::Error, format(L"°²×°Ê§°Ü£ºÎŞ·¨ÎªÀ©Õ¹ {} Ğ´ÈëÃüÁî", ext));
+                logger.Log(LogLevel::Error, format(L"å®‰è£…å¤±è´¥ï¼šæ— æ³•ä¸ºæ‰©å±• {} å†™å…¥å‘½ä»¤", ext));
                 return false;
             }
-            logger.Log(LogLevel::Info, format(L"ÒÑÎªÀ©Õ¹ {} Ö±½ÓÉèÖÃÃüÁî£¨ÎŞ ProgID£©", ext));
+            logger.Log(LogLevel::Info, format(L"å·²ä¸ºæ‰©å±• {} ç›´æ¥è®¾ç½®å‘½ä»¤ï¼ˆæ—  ProgIDï¼‰", ext));
         }
     }
 
     SetInstalledFlag();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-    logger.Log(LogLevel::Info, L"°²×°³É¹¦");
+    logger.Log(LogLevel::Info, L"å®‰è£…æˆåŠŸ");
 
-    MessageBoxW(nullptr, (L"FileAgent °²×°³É¹¦¡£\nË«»÷ÎÄµµÊ±»á×Ô¶¯±¸·İµ½ " + g_backupStorePath + L"¡£").c_str(),
-        L"°²×°", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(nullptr, (L"FileAgent å®‰è£…æˆåŠŸã€‚\nåŒå‡»æ–‡æ¡£æ—¶ä¼šè‡ªåŠ¨å¤‡ä»½åˆ° " + g_backupStorePath + L"ã€‚").c_str(),
+        L"å®‰è£…", MB_OK | MB_ICONINFORMATION);
     return true;
 }
 
-// ==================== Ğ¶ÔØ ====================
+// ==================== å¸è½½ ====================
 bool Uninstall() {
     if (!IsInstalled()) {
-        MessageBoxW(nullptr, L"FileAgent ÉĞÎ´°²×°¡£", L"ÌáÊ¾", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(nullptr, L"FileAgent å°šæœªå®‰è£…ã€‚", L"æç¤º", MB_OK | MB_ICONINFORMATION);
         return false;
     }
 
     for (const auto& ext : g_extensions) {
-        // ÓÅÏÈ¶ÁÈ¡°²×°Ê±´æ´¢µÄ ProgID
+        // ä¼˜å…ˆè¯»å–å®‰è£…æ—¶å­˜å‚¨çš„ ProgID
         wstring storedProgidKey = L"InstalledProgid_" + ext.substr(1);
         wstring progId = ReadRegString(HKEY_CURRENT_USER, REG_KEY_PATH, storedProgidKey);
         if (progId.empty()) {
-            // ¼æÈİ¾É°æ±¾£¨Î´´æ´¢µÄÇé¿ö£©»òÓÃ»§ÊÖ¶¯É¾³ı´æ´¢Öµ
+            // å…¼å®¹æ—§ç‰ˆæœ¬ï¼ˆæœªå­˜å‚¨çš„æƒ…å†µï¼‰æˆ–ç”¨æˆ·æ‰‹åŠ¨åˆ é™¤å­˜å‚¨å€¼
             progId = GetProgID(ext);
         }
 
@@ -186,9 +207,9 @@ bool Uninstall() {
                 }
                 catch (...) {}
             }
-            logger.Log(LogLevel::Info, format(L"ÒÑ»Ö¸´ ProgID {} µÄÔ­Ê¼ÃüÁî", progId));
+            logger.Log(LogLevel::Info, format(L"å·²æ¢å¤ ProgID {} çš„åŸå§‹å‘½ä»¤", progId));
 
-            // É¾³ı´æ´¢µÄ ProgID Öµ
+            // åˆ é™¤å­˜å‚¨çš„ ProgID å€¼
             try {
                 RegKey key;
                 key.Open(HKEY_CURRENT_USER, REG_KEY_PATH, KEY_WRITE);
@@ -197,12 +218,12 @@ bool Uninstall() {
             catch (...) {}
         }
         else {
-            // ÎŞ ProgID£º»Ö¸´À©Õ¹±¾ÉíµÄÃüÁî
+            // æ—  ProgIDï¼šæ¢å¤æ‰©å±•æœ¬èº«çš„å‘½ä»¤
             wstring userCommandKey = L"Software\\Classes\\" + ext + L"\\shell\\open\\command";
             wstring original = ReadRegString(HKEY_CURRENT_USER, userCommandKey, L"OriginalCommand");
             if (!original.empty()) {
                 if (original == L"") {
-                    // Ô­Ê¼Îª¿Õ£¬ÔòÉ¾³ı open ¼ü
+                    // åŸå§‹ä¸ºç©ºï¼Œåˆ™åˆ é™¤ open é”®
                     try {
                         RegKey key;
                         key.Open(HKEY_CURRENT_USER, L"Software\\Classes\\" + ext + L"\\shell", KEY_WRITE);
@@ -219,15 +240,15 @@ bool Uninstall() {
                     }
                     catch (...) {}
                 }
-                logger.Log(LogLevel::Info, format(L"ÒÑ»Ö¸´À©Õ¹ {} µÄÔ­Ê¼ÃüÁî", ext));
+                logger.Log(LogLevel::Info, format(L"å·²æ¢å¤æ‰©å±• {} çš„åŸå§‹å‘½ä»¤", ext));
             }
         }
     }
 
     RemoveInstalledFlag();
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-    logger.Log(LogLevel::Info, L"Ğ¶ÔØ³É¹¦");
-    MessageBoxW(nullptr, L"FileAgent ÒÑĞ¶ÔØ£¬ÎÄ¼ş¹ØÁªÒÑ»Ö¸´¡£", L"Ğ¶ÔØ", MB_OK | MB_ICONINFORMATION);
+    logger.Log(LogLevel::Info, L"å¸è½½æˆåŠŸ");
+    MessageBoxW(nullptr, L"FileAgent å·²å¸è½½ï¼Œæ–‡ä»¶å…³è”å·²æ¢å¤ã€‚", L"å¸è½½", MB_OK | MB_ICONINFORMATION);
     return true;
 }
 
@@ -241,65 +262,87 @@ static bool IsPathUnderAnyRoot(const fs::path& path, const vector<wstring>& root
     return false;
 }
 
-// ==================== ´úÀí´ò¿ª ====================
+// ==================== ä»£ç†æ‰“å¼€ ====================
 void AgentOpen(const wstring& filePath) {
     if (!fs::exists(filePath)) {
-        MessageBoxW(nullptr, L"ÎÄ¼ş²»´æÔÚ»òÎŞ·¨·ÃÎÊ¡£", L"´íÎó", MB_ICONERROR);
+        MessageBoxW(nullptr, L"æ–‡ä»¶ä¸å­˜åœ¨æˆ–æ— æ³•è®¿é—®ã€‚", L"é”™è¯¯", MB_ICONERROR);
         return;
     }
 
-    // ---- Ìø¹ı±¸·İÅĞ¶Ï ----
+    // ---- è·³è¿‡å¤‡ä»½åˆ¤æ–­ ----
     bool shouldSkipBackup = false;
     if (!g_skipBackupRoots.empty() && IsPathUnderAnyRoot(filePath, g_skipBackupRoots)) {
         shouldSkipBackup = true;
     }
     if (!shouldSkipBackup && !g_backupStorePath.empty() && IsPathUnderAnyRoot(filePath, { g_backupStorePath })) {
         shouldSkipBackup = true;
-        logger.DLog(LogLevel::Info, L"ÎÄ¼şÎ»ÓÚ±¸·İ´æ´¢Ä¿Â¼£¬Ìø¹ı±¸·İ: " + filePath);
+        logger.DLog(LogLevel::Info, L"æ–‡ä»¶ä½äºå¤‡ä»½å­˜å‚¨ç›®å½•ï¼Œè·³è¿‡å¤‡ä»½: " + filePath);
     }
 
-    wstring targetFile = filePath; // Ä¬ÈÏ´ò¿ªÔ­¼ş
+    wstring targetFile = filePath; // é»˜è®¤æ‰“å¼€åŸä»¶
 
     if (shouldSkipBackup) {
-        logger.DLog(LogLevel::Info, L"Ìø¹ı±¸·İ£¬Ö±½Ó´ò¿ªÔ­¼ş: " + filePath);
+        logger.DLog(LogLevel::Info, L"è·³è¿‡å¤‡ä»½ï¼Œç›´æ¥æ‰“å¼€åŸä»¶: " + filePath);
     }
     else {
-        // Ö´ĞĞ±¸·İ
+        // æ‰§è¡Œå¤‡ä»½
         EnsureBackupDir();
         wstring backupPath = MakeBackupPath(filePath);
 
         bool backupExists = fs::exists(backupPath);
         bool performBackup = true;
 
+        // å¤‡ä»½å·²å­˜åœ¨ä¸”å¤§å°ã€ä¿®æ”¹æ—¶é—´ä¸æºæ–‡ä»¶ä¸€è‡´æ—¶ï¼Œè§†ä¸ºæºæ–‡ä»¶æœªæ›´æ–°ï¼Œä¸å¼¹é€šçŸ¥
+        bool updated = true;
+        if (backupExists) {
+            std::error_code srcSizeErr, bakSizeErr, srcTimeErr, bakTimeErr;
+            const auto srcSize = fs::file_size(filePath, srcSizeErr);
+            const auto bakSize = fs::file_size(backupPath, bakSizeErr);
+            const auto srcTime = fs::last_write_time(filePath, srcTimeErr);
+            const auto bakTime = fs::last_write_time(backupPath, bakTimeErr);
+            if (!srcSizeErr && !bakSizeErr && !srcTimeErr && !bakTimeErr &&
+                srcSize == bakSize && srcTime == bakTime) {
+                updated = false;
+            }
+        }
+
         if (backupExists && !g_overwrite) {
-            logger.DLog(LogLevel::Info, L"±¸·İÎÄ¼şÒÑ´æÔÚÇÒ Overwrite=false£¬Ìø¹ı±¸·İ: " + backupPath);
+            logger.DLog(LogLevel::Info, L"å¤‡ä»½æ–‡ä»¶å·²å­˜åœ¨ä¸” Overwrite=falseï¼Œè·³è¿‡å¤‡ä»½: " + backupPath);
             performBackup = false;
         }
 
         if (performBackup) {
-            // FALSE ±íÊ¾¸²¸ÇÒÑÓĞÎÄ¼ş£¨CopyFile µÄ bFailIfExists ²ÎÊı£©
+            // FALSE è¡¨ç¤ºè¦†ç›–å·²æœ‰æ–‡ä»¶ï¼ˆCopyFile çš„ bFailIfExists å‚æ•°ï¼‰
             bool backupOk = CopyFileW(filePath.c_str(), backupPath.c_str(), FALSE);
             if (!backupOk) {
-                logger.DLog(LogLevel::Warn, L"±¸·İÎÄ¼şÊ§°Ü£¬½«¼ÌĞø³¢ÊÔ´ò¿ªÔ­¼ş");
-                // backupOk Ê§°ÜÊ± targetFile ±£³ÖÎªÔ­¼ş£¨Ä¬ÈÏ£©
+                logger.DLog(LogLevel::Warn, L"å¤‡ä»½æ–‡ä»¶å¤±è´¥ï¼Œå°†ç»§ç»­å°è¯•æ‰“å¼€åŸä»¶");
+                // backupOk å¤±è´¥æ—¶ targetFile ä¿æŒä¸ºåŸä»¶ï¼ˆé»˜è®¤ï¼‰
             }
             else {
-                logger.DLog(LogLevel::Info, L"±¸·İ³É¹¦: " + backupPath);
+                logger.DLog(LogLevel::Info, L"å¤‡ä»½æˆåŠŸ: " + backupPath);
+                if (updated) {
+                    // é€šçŸ¥ä¸­åªæ˜¾ç¤ºæœ€åä¸€çº§æ–‡ä»¶å¤¹ä¸æ–‡ä»¶åï¼Œé¿å…å®Œæ•´è·¯å¾„è¿‡é•¿
+                    const fs::path backupFsPath(backupPath);
+                    wstring displayName = backupFsPath.filename().wstring();
+                    const wstring parentName = backupFsPath.parent_path().filename().wstring();
+                    if (!parentName.empty()) displayName = parentName + L"\\" + displayName;
+                    ShowBackupToast(L"å·²å¤‡ä»½åˆ°: " + displayName);
+                }
                 if (g_openCopy) {
                     targetFile = backupPath;
-                    logger.DLog(LogLevel::Info, L"ÅäÖÃÎª´ò¿ª¸±±¾: " + targetFile);
+                    logger.DLog(LogLevel::Info, L"é…ç½®ä¸ºæ‰“å¼€å‰¯æœ¬: " + targetFile);
                 }
             }
         }
         else {
-            // Ìø¹ı±¸·İ£ºtargetFile ±£³ÖÎªÔ­¼ş
+            // è·³è¿‡å¤‡ä»½ï¼štargetFile ä¿æŒä¸ºåŸä»¶
             if (g_openCopy) {
-                logger.DLog(LogLevel::Warn, L"ÓÉÓÚ Overwrite=false ÇÒ±¸·İÎÄ¼şÒÑ´æÔÚ£¬ÎŞ·¨´ò¿ª¸±±¾£¬½«´ò¿ªÔ­¼ş");
+                logger.DLog(LogLevel::Warn, L"ç”±äº Overwrite=false ä¸”å¤‡ä»½æ–‡ä»¶å·²å­˜åœ¨ï¼Œæ— æ³•æ‰“å¼€å‰¯æœ¬ï¼Œå°†æ‰“å¼€åŸä»¶");
             }
         }
     }
 
-    // ---- »ñÈ¡Ô­Ê¼´ò¿ªÃüÁî ----
+    // ---- è·å–åŸå§‹æ‰“å¼€å‘½ä»¤ ----
     fs::path p(filePath);
     wstring ext = p.extension().wstring();
     for (auto& c : ext) c = towlower(c);
@@ -322,12 +365,12 @@ void AgentOpen(const wstring& filePath) {
     }
 
     if (originalCommand.empty()) {
-        logger.DLog(LogLevel::Error, L"ÎŞ·¨ÕÒµ½Ô­Ê¼´ò¿ª³ÌĞò");
-        MessageBoxW(nullptr, L"ÎŞ·¨ÕÒµ½¸ÃÎÄ¼şÀàĞÍµÄ¹ØÁª³ÌĞò£¬Çë¼ì²é×¢²á±í¡£", L"´íÎó", MB_ICONERROR);
+        logger.DLog(LogLevel::Error, L"æ— æ³•æ‰¾åˆ°åŸå§‹æ‰“å¼€ç¨‹åº");
+        MessageBoxW(nullptr, L"æ— æ³•æ‰¾åˆ°è¯¥æ–‡ä»¶ç±»å‹çš„å…³è”ç¨‹åºï¼Œè¯·æ£€æŸ¥æ³¨å†Œè¡¨ã€‚", L"é”™è¯¯", MB_ICONERROR);
         return;
     }
 
-    // ---- Ìæ»» %1 ²¢Æô¶¯ ----
+    // ---- æ›¿æ¢ %1 å¹¶å¯åŠ¨ ----
     wstring command = originalCommand;
     wstring targetWithQuotes = L"\"" + targetFile + L"\"";
 
@@ -356,8 +399,8 @@ void AgentOpen(const wstring& filePath) {
     if (!CreateProcessW(nullptr, cmdLine.data(), nullptr, nullptr, FALSE,
         CREATE_DEFAULT_ERROR_MODE, nullptr, nullptr, &si, &pi)) {
         DWORD err = GetLastError();
-        wstring errMsg = format(L"Æô¶¯Ô­Ê¼³ÌĞòÊ§°Ü£¬´íÎóÂë: {}", err);
-        MessageBoxW(nullptr, errMsg.c_str(), L"´íÎó", MB_ICONERROR);
+        wstring errMsg = format(L"å¯åŠ¨åŸå§‹ç¨‹åºå¤±è´¥ï¼Œé”™è¯¯ç : {}", err);
+        MessageBoxW(nullptr, errMsg.c_str(), L"é”™è¯¯", MB_ICONERROR);
         logger.DLog(LogLevel::Error, errMsg);
         return;
     }

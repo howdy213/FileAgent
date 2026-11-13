@@ -1,4 +1,4 @@
-/*
+ï»¿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with FileAgent. If not, see <https://www.gnu.org/licenses/>.
  *
- * ÉùÃ÷ËùÓĞ¹«¹²º¯Êı¡¢³£Á¿ºÍÈ«¾Ö±äÁ¿
+ * å£°æ˜æ‰€æœ‰å…¬å…±å‡½æ•°ã€å¸¸é‡å’Œå…¨å±€å˜é‡
  */
 #pragma once
 #include "WinUtils/WinPch.h"
@@ -28,7 +28,7 @@
 #include "WinUtils/WinUtils.h"
 #include "WinUtils/Logger.h"
 
-// ==================== ³£Á¿ ====================
+// ==================== å¸¸é‡ ====================
 inline const std::wstring APP_NAME = L"FileAgent";
 inline const std::wstring DEFAULT_BACKUP_DIR_NAME = L"AutoSaveBackup";
 inline const std::vector<std::wstring> DEFAULT_EXTENSIONS = {
@@ -41,32 +41,34 @@ inline const std::wstring USER_CHOICE_BASE = L"Software\\Microsoft\\Windows\\Cur
 inline const std::wstring USER_CHOICE_SUB = L"UserChoice";
 inline const std::wstring USER_CHOICE_PROGID = L"Progid";
 
-// ==================== È«¾Ö±äÁ¿£¨extern ÉùÃ÷£© ====================
+// ==================== å…¨å±€å˜é‡ï¼ˆextern å£°æ˜ï¼‰ ====================
 extern WinUtils::Logger logger;
 extern bool g_overwrite;
-extern std::vector<std::wstring> g_skipBackupRoots;   // ÈôÎÄ¼şÔÚ´ËÄ¿Â¼ÏÂ£¬ÔòÌø¹ı±¸·İ£¨¿ÉÎª¿Õ£©
-extern std::wstring g_backupStorePath;  // ±¸·İ´æ´¢Ä¿Â¼£¨¾ø¶ÔÂ·¾¶£©
-extern std::vector<std::wstring> g_extensions; // Òª´¦ÀíµÄÀ©Õ¹ÃûÁĞ±í
-extern bool g_openCopy;                    // ÊÇ·ñ´ò¿ª¸±±¾
-extern bool g_addTimestamp;                // ÊÇ·ñÔÚ±¸·İÎÄ¼şÃûÖĞÌí¼ÓÊ±¼ä´Á
+extern std::vector<std::wstring> g_skipBackupRoots;   // è‹¥æ–‡ä»¶åœ¨æ­¤ç›®å½•ä¸‹ï¼Œåˆ™è·³è¿‡å¤‡ä»½ï¼ˆå¯ä¸ºç©ºï¼‰
+extern std::wstring g_backupStorePath;  // å¤‡ä»½å­˜å‚¨ç›®å½•ï¼ˆç»å¯¹è·¯å¾„ï¼‰
+extern std::vector<std::wstring> g_extensions; // è¦å¤„ç†çš„æ‰©å±•ååˆ—è¡¨
+extern bool g_openCopy;                    // æ˜¯å¦æ‰“å¼€å‰¯æœ¬
+extern bool g_addTimestamp;                // æ˜¯å¦åœ¨å¤‡ä»½æ–‡ä»¶åä¸­æ·»åŠ æ—¶é—´æˆ³
+extern std::wstring g_enaPath;             // å¤‡ä»½æˆåŠŸåç”¨äºå¼¹å‡ºé€šçŸ¥çš„ exe è·¯å¾„ï¼ˆå¯ç•™ç©ºï¼‰
 
-// ==================== º¯ÊıÉùÃ÷ ====================
+// ==================== å‡½æ•°å£°æ˜ ====================
 
-// ÅäÖÃ¼ÓÔØ
+// é…ç½®åŠ è½½
 void LoadConfig();
 
-// Â·¾¶¹¤¾ß
+// è·¯å¾„å·¥å…·
 std::wstring MakeBackupPath(const std::wstring& sourceFile);
 void EnsureBackupDir();
 
-// ×¢²á±í¸¨Öú
+// æ³¨å†Œè¡¨è¾…åŠ©
 std::wstring ReadRegString(HKEY hKeyParent, const std::wstring& subKey, const std::wstring& valueName);
 bool WriteRegString(HKEY hKeyParent, const std::wstring& subKey, const std::wstring& valueName, const std::wstring& data);
 std::vector<std::wstring> EnumRegValueNames(HKEY hKeyParent, const std::wstring& subKey);
 bool CopyRegistryKey(HKEY hSrcParent, const std::wstring& srcSubKey, HKEY hDstParent, const std::wstring& dstSubKey);
 std::wstring GetProgID(const std::wstring& ext);
 
-// ºËĞÄ¹¦ÄÜ
+// æ ¸å¿ƒåŠŸèƒ½
+bool IsInstalled();
 bool Install();
 bool Uninstall();
 void AgentOpen(const std::wstring& filePath);

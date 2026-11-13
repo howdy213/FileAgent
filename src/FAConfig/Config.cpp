@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -24,7 +24,6 @@
 #include "WinUtils/WinUtils.h"
 
 #include <algorithm>
-#include <cwctype>
 
 using namespace std;
 using namespace WinUtils;
@@ -32,16 +31,14 @@ namespace fs = filesystem;
 
 static wstring ToLowerCopy(const wstring& text) {
 	wstring result = text;
-	for (auto& c : result) c = towlower(c);
+	INIStringUtil::toLower(result);
 	return result;
 }
 
 static wstring TrimCopy(const wstring& text) {
-	const wstring whitespace = L" \t\r\n";
-	size_t begin = text.find_first_not_of(whitespace);
-	if (begin == wstring::npos) return L"";
-	size_t end = text.find_last_not_of(whitespace);
-	return text.substr(begin, end - begin + 1);
+	wstring result = text;
+	INIStringUtil::trim(result);
+	return result;
 }
 
 // ==================== 路径 ====================
@@ -65,6 +62,7 @@ static void CreateDefaultFileAgentIni(const fs::path& iniPath) {
 	data[L"Settings"][L"OpenCopy"] = L"false";
 	data[L"Settings"][L"AddTimestamp"] = L"true";
 	data[L"Settings"][L"Extensions"] = L".doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf";
+	data[L"Settings"][L"EnaPath"] = L"";
 	INIFile ini(iniPath);
 	static_cast<void>(ini.generate(data, true));
 }
@@ -146,6 +144,59 @@ bool ResolveAliasValue(const wstring& name, wstring& value) {
 	return false;
 }
 
+// ==================== 注册状态（委托 FileAgent） ====================
+// 向同目录的 FileAgent.exe 传参，通过其退出码获取结果：
+//   status    -> 0 已安装 / 1 未安装
+//   install   -> 0 成功 / 1 失败
+//   uninstall -> 0 成功 / 1 失败
+static bool RunFileAgent(const wstring& arguments, DWORD& exitCode) {
+	const fs::path agentPath = GetConfigDirectory() / FILE_AGENT_EXE_NAME;
+	if (!fs::exists(agentPath)) return false;
+
+	const wstring commandLine = L"\"" + agentPath.wstring() + L"\" " + arguments;
+	vector<wchar_t> buffer(commandLine.begin(), commandLine.end());
+	buffer.push_back(L'\0');
+
+	STARTUPINFOW startupInfo = {};
+	startupInfo.cb = sizeof(startupInfo);
+	PROCESS_INFORMATION processInfo = {};
+
+	if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, FALSE,
+		0, nullptr, agentPath.parent_path().c_str(), &startupInfo, &processInfo)) {
+		return false;
+	}
+
+	// 最多等待 30 秒，避免 FileAgent.exe 异常时阻塞界面
+	if (WaitForSingleObject(processInfo.hProcess, 30000) == WAIT_TIMEOUT) {
+		TerminateProcess(processInfo.hProcess, 1);
+	}
+	exitCode = 1;
+	GetExitCodeProcess(processInfo.hProcess, &exitCode);
+	CloseHandle(processInfo.hThread);
+	CloseHandle(processInfo.hProcess);
+	return true;
+}
+
+bool IsRegistered() {
+	DWORD exitCode = 1;
+	return RunFileAgent(L"--status", exitCode) && exitCode == 0;
+}
+
+bool RegisterToSystem() {
+	DWORD exitCode = 1;
+	return RunFileAgent(L"--install", exitCode) && exitCode == 0;
+}
+
+bool UnregisterFromSystem() {
+	DWORD exitCode = 1;
+	return RunFileAgent(L"--uninstall", exitCode) && exitCode == 0;
+}
+
+wstring GetRegistrationSummary() {
+	if (!fs::exists(GetConfigDirectory() / FILE_AGENT_EXE_NAME)) return L"未找到 FileAgent.exe";
+	return IsRegistered() ? L"FileAgent 已安装" : L"FileAgent 未安装";
+}
+
 // ==================== FileAgent.ini 修改 ====================
 bool WriteFileAgentSetting(const wstring& key, const wstring& value) {
 	fs::path iniPath = GetFileAgentConfigPath();
@@ -158,6 +209,53 @@ bool WriteFileAgentSetting(const wstring& key, const wstring& value) {
 	if (!ini.read(data)) return false;
 
 	data[L"Settings"][key] = value;
+	return ini.write(data, true);
+}
+
+// ==================== FileAgent.ini 设置 ====================
+FileAgentSettings LoadFileAgentSettings() {
+	FileAgentSettings settings;
+	fs::path iniPath = GetFileAgentConfigPath();
+	if (!fs::exists(iniPath)) {
+		CreateDefaultFileAgentIni(iniPath);
+	}
+
+	INIStructure data;
+	INIFile ini(iniPath);
+	if (!ini.read(data)) return settings;
+
+	auto& section = data[L"Settings"];
+
+	const wstring backupDir = section.get(L"BackupDir");
+	if (!backupDir.empty()) settings.backupDir = backupDir;
+	settings.backupRoot = section.get(L"BackupRoot");
+	settings.enaPath = section.get(L"EnaPath");
+	const wstring extensions = section.get(L"Extensions");
+	if (!extensions.empty()) settings.extensions = extensions;
+	settings.overwrite = section.get_as<bool>(L"Overwrite", true);
+	settings.openCopy = section.get_as<bool>(L"OpenCopy", false);
+	settings.addTimestamp = section.get_as<bool>(L"AddTimestamp", true);
+	return settings;
+}
+
+bool SaveFileAgentSettings(const FileAgentSettings& settings) {
+	fs::path iniPath = GetFileAgentConfigPath();
+	if (!fs::exists(iniPath)) {
+		CreateDefaultFileAgentIni(iniPath);
+	}
+
+	INIStructure data;
+	INIFile ini(iniPath);
+	if (!ini.read(data)) return false;
+
+	auto& section = data[L"Settings"];
+	section[L"BackupDir"] = settings.backupDir;
+	section[L"BackupRoot"] = settings.backupRoot;
+	section[L"Extensions"] = settings.extensions;
+	section[L"EnaPath"] = settings.enaPath;
+	section[L"Overwrite"] = settings.overwrite ? L"true" : L"false";
+	section[L"OpenCopy"] = settings.openCopy ? L"true" : L"false";
+	section[L"AddTimestamp"] = settings.addTimestamp ? L"true" : L"false";
 	return ini.write(data, true);
 }
 
@@ -182,6 +280,25 @@ static bool IsCommandToken(const wstring& token) {
 static size_t GetCommandPrefixLength(const wstring& token) {
 	if (token.size() >= 2 && token[0] == L'-' && token[1] == L'-') return 2;
 	return 1;
+}
+
+// 输出到调用方的控制台（若存在）；无控制台时静默
+static void WriteStdoutLine(const wstring& text) {
+	static int consoleState = -1; // -1 未检测，0 无控制台，1 有控制台
+	if (consoleState < 0) {
+		consoleState = GetConsoleWindow() ? 1 : 0;
+		if (consoleState == 0 && AttachConsole(ATTACH_PARENT_PROCESS)) {
+			consoleState = 1;
+		}
+	}
+	if (consoleState == 0) return;
+
+	HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+	if (!output || output == INVALID_HANDLE_VALUE) return;
+
+	const wstring line = text + L"\r\n";
+	DWORD written = 0;
+	WriteConsoleW(output, line.c_str(), static_cast<DWORD>(line.size()), &written, nullptr);
 }
 
 int RunCommandLine(const wstring& cmdLine) {
@@ -209,6 +326,26 @@ int RunCommandLine(const wstring& cmdLine) {
 		if (name.empty()) continue;
 
 		const wstring lowerName = ToLowerCopy(name);
+
+		// 注册管理命令：始终可用，不受启用状态限制
+		if (lowerName == L"register") {
+			const bool ok = RegisterToSystem();
+			WriteStdoutLine(ok ? L"FAConfig 已注册。" : L"FAConfig 注册失败。");
+			if (!ok) exitCode = 1;
+			continue;
+		}
+		if (lowerName == L"unregister") {
+			const bool ok = UnregisterFromSystem();
+			WriteStdoutLine(ok ? L"FAConfig 已卸载注册。" : L"FAConfig 卸载注册失败。");
+			if (!ok) exitCode = 1;
+			continue;
+		}
+		if (lowerName == L"status" || lowerName == L"isregistered") {
+			const bool registered = IsRegistered();
+			WriteStdoutLine(registered ? L"已注册" : L"未注册");
+			exitCode = registered ? 0 : 1;
+			continue;
+		}
 
 		// 特殊命令：不受启用状态限制的方向切换
 		if (lowerName == L"disable") {

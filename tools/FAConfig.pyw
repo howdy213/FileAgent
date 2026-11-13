@@ -8,21 +8,28 @@ FAConfig.ini 编辑器 + ClassIsland 自动化配置生成/导入。
   对 FileAgent.ini 的写入仍由 FAConfig.exe 在 ClassIsland 触发时完成。
 - 可根据别名表生成 ClassIsland 可识别的 Automations JSON，并在选择 ClassIsland.exe
   后自动定位到 <ClassIsland 目录>\\data\\Config\\Automations 进行导入。
+
+编码说明：
+- FAConfig.exe 在 Windows 上通过 ANSI 代码页读取 ini，所以本脚本以 ANSI 读写 FAConfig.ini。
 """
 
 from __future__ import annotations
 
 import configparser
+import io
 import json
+import locale
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, ttk
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -50,10 +57,57 @@ EN_TO_CN = {
 
 TRIGGER_CURRENT_SUBJECT_CHANGED = "classisland.lessons.currentTimeStateChanged"
 RULE_CURRENT_SUBJECT = "classisland.lessons.currentSubject"
+RULE_TIME_STATE = "classisland.lessons.timeState"
+RULE_NEXT_SUBJECT = "classisland.lessons.nextSubject"
 ACTION_RUN = "classisland.os.run"
+TIME_STATE_PREPARE = 3  # 预备铃
 
 
 # ==================== 基础工具 ====================
+
+def set_dpi_awareness() -> None:
+    """在 Windows 上启用 DPI 感知，避免高 DPI 缩放下界面模糊。
+
+    必须在创建任何窗口（包括 Tk 根窗口）之前调用。
+    - Windows 8.1+：优先使用 shcore.SetProcessDpiAwareness(1)（PROCESS_SYSTEM_DPI_AWARE）。
+    - 更早系统：回退到 user32.SetProcessDPIAware()。
+    - 非 Windows 平台直接跳过。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+    except ImportError:
+        return
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        return
+    except (AttributeError, OSError):
+        pass
+
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
+
+
+def apply_tk_dpi_scaling(app: tk.Tk) -> None:
+    """启用 DPI 感知后，让 tkinter 按实际 DPI 缩放，避免控件变得过小。
+
+    tk 的 scaling 表示“每磅多少像素”，默认约 96/72。若系统 DPI 高于 96，
+    不调整会导致界面偏小。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        dpi = ctypes.windll.user32.GetDpiForWindow(app.winfo_id())
+        if dpi:
+            app.tk.call("tk", "scaling", dpi / 72.0)
+    except Exception:
+        pass
+
 
 def load_settings() -> dict:
     try:
@@ -76,6 +130,51 @@ def save_settings(data: dict) -> None:
 def default_ini_path() -> Path:
     # 自动使用脚本所在目录的 FAConfig.ini
     return SCRIPT_DIR / "FAConfig.ini"
+
+
+# ==================== 注册状态（委托 FileAgent.exe） ====================
+
+def fileagent_exe() -> Path:
+    return default_ini_path().with_name("FileAgent.exe")
+
+
+def run_fileagent(arguments: list[str]) -> Optional[int]:
+    """向 FileAgent.exe 传参并返回其退出码；无法启动时返回 None。"""
+    exe = fileagent_exe()
+    if not exe.exists():
+        return None
+    try:
+        result = subprocess.run([str(exe), *arguments], cwd=str(exe.parent),
+                                capture_output=True, timeout=60)
+        return result.returncode
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def is_registered() -> bool:
+    """查询 FileAgent 是否已安装（--status 退出码 0 = 已安装）。"""
+    return run_fileagent(["--status"]) == 0
+
+
+def register_faconfig() -> bool:
+    """调用 FileAgent.exe --install。"""
+    return run_fileagent(["--install"]) == 0
+
+
+def unregister_faconfig() -> bool:
+    """调用 FileAgent.exe --uninstall。"""
+    return run_fileagent(["--uninstall"]) == 0
+
+
+def ansi_encoding() -> str:
+    """返回 FAConfig.ini 应使用的编码名。
+
+    - Windows：使用 ANSI 代码页（Python 中名为 "mbcs"），与 FAConfig.exe 保持一致。
+    - 其他平台：使用系统首选编码（通常为 UTF-8），便于脚本跨平台运行。
+    """
+    if sys.platform == "win32":
+        return "mbcs"
+    return locale.getpreferredencoding(False) or "utf-8"
 
 
 def quote_arg(value: str) -> str:
@@ -101,7 +200,12 @@ def backup_file(path: Path) -> Optional[Path]:
 # ==================== FAConfig.ini ====================
 
 class AliasStore:
-    """直接读写 FAConfig.ini，保持与 FAConfig.exe 相同的格式。"""
+    """直接读写 FAConfig.ini，保持与 FAConfig.exe 相同的格式。
+
+    编码约定：
+    - FAConfig.exe 使用 Windows ANSI 代码页读取 ini，因此读写均使用 ANSI。
+    - 不再回退到 UTF-8：FileAgent 无法识别 UTF-8 保存的路径。
+    """
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -112,6 +216,41 @@ class AliasStore:
         parser.strict = False
         return parser
 
+    def _read_text(self) -> str:
+        try:
+            raw = self.path.read_bytes()
+        except OSError as error:
+            raise RuntimeError(f"读取 {self.path} 失败：{error}") from error
+
+        encoding = ansi_encoding()
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raise RuntimeError(
+                f"读取 {self.path} 失败：文件为 UTF-8 编码。"
+                f"FileAgent 只能识别 ANSI，请将文件另存为 ANSI 后重试。"
+            )
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError as error:
+            raise RuntimeError(
+                f"读取 {self.path} 失败：文件不是 ANSI({encoding}) 编码。"
+                f"FileAgent 只能识别 ANSI，请将文件另存为 ANSI 后重试。"
+            ) from error
+
+    def _write_text(self, text: str) -> None:
+        encoding = ansi_encoding()
+        # 先编码再写文件：write_text 会先清空文件，若编码失败会丢失原有内容
+        try:
+            data = text.encode(encoding)
+        except UnicodeEncodeError as error:
+            raise RuntimeError(
+                f"写入 {self.path} 失败：内容包含 ANSI({encoding}) 无法表示的字符。"
+                f"请移除非 ANSI 字符，或调整 Windows 区域与语言设置。"
+            ) from error
+        try:
+            self.path.write_bytes(data)
+        except OSError as error:
+            raise RuntimeError(f"写入 {self.path} 失败：{error}") from error
+
     def ensure_exists(self) -> None:
         if self.path.exists():
             return
@@ -120,16 +259,17 @@ class AliasStore:
         parser.add_section("Settings")
         parser.set("Settings", "Enabled", "true")
         parser.add_section("Aliases")
-        with self.path.open("w", encoding="utf-8") as f:
-            parser.write(f)
+        buffer = io.StringIO()
+        parser.write(buffer)
+        self._write_text(buffer.getvalue())
 
     def load(self) -> tuple[list[tuple[str, str]], bool]:
         self.ensure_exists()
         parser = self._parser()
         try:
-            parser.read(self.path, encoding="utf-8")
-        except (configparser.Error, OSError) as error:
-            raise RuntimeError(f"读取 {self.path} 失败：{error}") from error
+            parser.read_string(self._read_text(), source=str(self.path))
+        except configparser.Error as error:
+            raise RuntimeError(f"解析 {self.path} 失败：{error}") from error
 
         enabled = True
         if parser.has_section("Settings"):
@@ -149,9 +289,9 @@ class AliasStore:
         self.ensure_exists()
         parser = self._parser()
         try:
-            parser.read(self.path, encoding="utf-8")
-        except (configparser.Error, OSError) as error:
-            raise RuntimeError(f"读取 {self.path} 失败：{error}") from error
+            parser.read_string(self._read_text(), source=str(self.path))
+        except configparser.Error as error:
+            raise RuntimeError(f"解析 {self.path} 失败：{error}") from error
 
         if not parser.has_section("Settings"):
             parser.add_section("Settings")
@@ -163,8 +303,74 @@ class AliasStore:
         for name, value in aliases:
             parser.set("Aliases", name, value)
 
-        with self.path.open("w", encoding="utf-8") as f:
-            parser.write(f)
+        buffer = io.StringIO()
+        parser.write(buffer)
+        self._write_text(buffer.getvalue())
+
+
+class FileAgentIniStore(AliasStore):
+    """读写 FileAgent.ini 的 [Settings]，与 FileAgent 的默认值保持一致。"""
+
+    DEFAULTS = {
+        "Overwrite": "true",
+        "BackupRoot": "",
+        "BackupDir": ".\\AutoSaveBackup",
+        "OpenCopy": "false",
+        "AddTimestamp": "true",
+        "Extensions": ".doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf",
+        "EnaPath": "",
+    }
+    BOOL_KEYS = ("Overwrite", "OpenCopy", "AddTimestamp")
+
+    def ensure_exists(self) -> None:
+        if self.path.exists():
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        parser = self._parser()
+        parser.add_section("Settings")
+        for key, value in self.DEFAULTS.items():
+            parser.set("Settings", key, value)
+        buffer = io.StringIO()
+        parser.write(buffer)
+        self._write_text(buffer.getvalue())
+
+    def load(self) -> dict[str, object]:
+        self.ensure_exists()
+        parser = self._parser()
+        try:
+            parser.read_string(self._read_text(), source=str(self.path))
+        except configparser.Error as error:
+            raise RuntimeError(f"解析 {self.path} 失败：{error}") from error
+
+        values: dict[str, object] = dict(self.DEFAULTS)
+        if not parser.has_section("Settings"):
+            return values
+
+        for key in ("BackupDir", "BackupRoot", "Extensions", "EnaPath"):
+            values[key] = parser.get("Settings", key, fallback=str(values[key])).strip()
+        for key in self.BOOL_KEYS:
+            raw = parser.get("Settings", key, fallback=str(values[key])).strip().lower()
+            values[key] = raw not in ("false", "0", "no", "off")
+        return values
+
+    def save(self, values: dict[str, object]) -> None:
+        self.ensure_exists()
+        parser = self._parser()
+        try:
+            parser.read_string(self._read_text(), source=str(self.path))
+        except configparser.Error as error:
+            raise RuntimeError(f"解析 {self.path} 失败：{error}") from error
+
+        if not parser.has_section("Settings"):
+            parser.add_section("Settings")
+        for key in ("BackupDir", "BackupRoot", "Extensions", "EnaPath"):
+            parser.set("Settings", key, str(values.get(key, "")))
+        for key in self.BOOL_KEYS:
+            parser.set("Settings", key, "true" if values.get(key) else "false")
+
+        buffer = io.StringIO()
+        parser.write(buffer)
+        self._write_text(buffer.getvalue())
 
 
 # ==================== ClassIsland 辅助 ====================
@@ -227,7 +433,48 @@ def auto_match_subject(alias: str, path: str, subjects: list[tuple[str, str]]) -
     return None
 
 
-def build_automation(alias: str, subject_id: str, fa_config_exe: str) -> dict:
+def build_automation(alias: str, subject_name: str, subject_id: str, fa_config_exe: str) -> dict:
+    """当前科目变化时切换配置。"""
+    rules = [
+        {
+            "IsReversed": False,
+            "Id": RULE_CURRENT_SUBJECT,
+            "Settings": {
+                "SubjectId": subject_id,
+                "IsActive": False,
+            },
+            "IsActive": False,
+        }
+    ]
+    return _build_automation(subject_name, rules, alias, fa_config_exe)
+
+
+def build_prepare_automation(alias: str, subject_name: str, subject_id: str, fa_config_exe: str) -> dict:
+    """预备铃响时提前切换到下一节课的配置。"""
+    rules = [
+        {
+            "IsReversed": False,
+            "Id": RULE_TIME_STATE,
+            "Settings": {
+                "State": TIME_STATE_PREPARE,
+                "IsActive": False,
+            },
+            "IsActive": False,
+        },
+        {
+            "IsReversed": False,
+            "Id": RULE_NEXT_SUBJECT,
+            "Settings": {
+                "SubjectId": subject_id,
+                "IsActive": False,
+            },
+            "IsActive": False,
+        },
+    ]
+    return _build_automation(f"{subject_name}（预备）", rules, alias, fa_config_exe)
+
+
+def _build_automation(display_name: str, rules: list, alias: str, fa_config_exe: str) -> dict:
     command = f'"{fa_config_exe}" --subject {quote_arg(alias)}'
     return {
         "Triggers": [
@@ -243,17 +490,7 @@ def build_automation(alias: str, subject_id: str, fa_config_exe: str) -> dict:
             "IsReversed": False,
             "Groups": [
                 {
-                    "Rules": [
-                        {
-                            "IsReversed": False,
-                            "Id": RULE_CURRENT_SUBJECT,
-                            "Settings": {
-                                "SubjectId": subject_id,
-                                "IsActive": False,
-                            },
-                            "IsActive": False,
-                        }
-                    ],
+                    "Rules": rules,
                     "Mode": 1,
                     "IsReversed": False,
                     "IsEnabled": True,
@@ -265,7 +502,7 @@ def build_automation(alias: str, subject_id: str, fa_config_exe: str) -> dict:
         "ActionSet": {
             "IsWorking": False,
             "Guid": str(uuid.uuid4()),
-            "Name": f"FAConfig-{alias}",
+            "Name": display_name,
             "Actions": [
                 {
                     "IsCompleted": False,
@@ -290,11 +527,18 @@ def build_automation(alias: str, subject_id: str, fa_config_exe: str) -> dict:
 
 def is_faconfig_automation(item: dict) -> bool:
     action_set = item.get("ActionSet", {}) if isinstance(item, dict) else {}
-    name = str(action_set.get("Name", ""))
-    if name.startswith("FAConfig-"):
-        return True
-    for action in action_set.get("Actions", []) if isinstance(action_set, dict) else []:
-        value = str(action.get("Settings", {}).get("Value", "")) if isinstance(action, dict) else ""
+    if not isinstance(action_set, dict):
+        return False
+    actions = action_set.get("Actions", [])
+    if not isinstance(actions, list):
+        return False
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        settings = action.get("Settings")
+        if not isinstance(settings, dict):
+            continue
+        value = str(settings.get("Value", ""))
         if "FAConfig.exe" in value and "--subject" in value:
             return True
     return False
@@ -333,7 +577,9 @@ class GenerateDialog(tk.Toplevel):
         self._sync_guard = False
 
         self.title("生成 ClassIsland 自动化")
-        self.geometry("760x560")
+        # 尺寸跟随字体，不写死像素
+        width, height = self._calculate_size()
+        self.geometry(f"{width}x{height}")
         self.transient(app)
         self.resizable(True, True)
 
@@ -343,7 +589,7 @@ class GenerateDialog(tk.Toplevel):
         hint = ttk.Label(container, text=(
             "为每个别名选择对应的 ClassIsland 科目。生成后，ClassIsland 会调用 "
             "FAConfig.exe --subject <别名> 修改 FileAgent.ini。"
-        ), wraplength=720, foreground="#555555")
+        ), wraplength=width - 40, foreground="#555555")
         hint.pack(anchor=tk.W, pady=(0, 8))
 
         tree_frame = ttk.Frame(container)
@@ -376,6 +622,13 @@ class GenerateDialog(tk.Toplevel):
         ttk.Checkbutton(edit_frame, text="保留已有的其他自动化",
                         variable=self.keep_others_var).pack(side=tk.RIGHT)
 
+        option_frame = ttk.Frame(container)
+        option_frame.pack(fill=tk.X)
+        self.include_prepare_var = tk.BooleanVar(
+            value=bool(self.app.settings.get("include_prepare", False)))
+        ttk.Checkbutton(option_frame, text="同时生成“预备”自动化（预备铃响时提前切换）",
+                        variable=self.include_prepare_var).pack(anchor=tk.W)
+
         button_frame = ttk.Frame(container)
         button_frame.pack(fill=tk.X, pady=(4, 0))
         self.import_button = ttk.Button(button_frame, text="生成并导入到 ClassIsland",
@@ -392,6 +645,18 @@ class GenerateDialog(tk.Toplevel):
             self.tree.focus(first)
             self._sync_from_selection()
         self.grab_set()
+
+    def _calculate_size(self) -> tuple[int, int]:
+        """根据字体大小计算对话框尺寸，跟随字体与 DPI 缩放。"""
+        try:
+            font = tkfont.nametofont("TkDefaultFont")
+            line_height = font.metrics("linespace") or 16
+            char_width = font.measure("0") or 8
+        except (tk.TclError, AttributeError):
+            return 760, 560
+        width = max(680, char_width * 80)
+        height = max(480, line_height * 28)
+        return width, height
 
     # ---- 界面同步 ----
     def _populate(self) -> None:
@@ -459,8 +724,13 @@ class GenerateDialog(tk.Toplevel):
         generated = []
         for alias, _path in self.aliases:
             subject_id = self.mapping.get(alias)
-            if subject_id:
-                generated.append(build_automation(alias, subject_id, fa_exe))
+            if not subject_id:
+                continue
+            subject_name = self._subject_label(subject_id)
+            generated.append(build_automation(alias, subject_name, subject_id, fa_exe))
+            if self.include_prepare_var.get():
+                generated.append(build_prepare_automation(alias, subject_name, subject_id, fa_exe))
+        self.app.settings["include_prepare"] = bool(self.include_prepare_var.get())
         return generated
 
     def _merged_items(self, generated: list) -> list:
@@ -487,7 +757,11 @@ class GenerateDialog(tk.Toplevel):
 
         target = Path(target_dir) / "FileAgent.json"
         items = self._merged_items(generated)
-        backup = write_automations(target, items)
+        try:
+            backup = write_automations(target, items)
+        except OSError as error:
+            messagebox.showerror("写入失败", f"无法写入：\n{target}\n\n{error}", parent=self)
+            return
         self.app.save_subject_mapping(self.mapping)
         self.app.log(f"已生成 {len(generated)} 条自动化并导入: {target}")
         if backup:
@@ -512,8 +786,12 @@ class GenerateDialog(tk.Toplevel):
         if not path:
             return
         items = self._merged_items(generated)
-        with Path(path).open("w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
+        try:
+            with Path(path).open("w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False, indent=2)
+        except OSError as error:
+            messagebox.showerror("导出失败", f"无法写入：\n{path}\n\n{error}", parent=self)
+            return
         self.app.save_subject_mapping(self.mapping)
         self.app.log(f"已导出 {len(generated)} 条自动化: {path}")
         messagebox.showinfo("完成", f"已导出到：\n{path}", parent=self)
@@ -524,12 +802,18 @@ class GenerateDialog(tk.Toplevel):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        # 启用 DPI 感知后，按实际 DPI 调整 tk 缩放，避免界面过小
+        apply_tk_dpi_scaling(self)
+
         self.title("FAConfig 编辑器 - 别名与 ClassIsland 自动化")
-        self.geometry("1000x800")
-        self.minsize(860, 680)
+        # 窗口尺寸跟随字体（行高/字符宽）与 DPI 缩放，不再写死像素值
+        win_w, win_h = self._calculate_window_size()
+        self.geometry(f"{win_w}x{win_h}")
+        self.minsize(win_w * 9 // 10, win_h * 8 // 10)
 
         self.settings = load_settings()
         self.store = AliasStore(default_ini_path())
+        self.fa_store = FileAgentIniStore(default_ini_path().with_name("FileAgent.ini"))
         self.aliases: list[tuple[str, str]] = []
         self.enabled = True
         self._editor: Optional[ttk.Entry] = None
@@ -537,6 +821,7 @@ class App(tk.Tk):
         self._editor_column: Optional[int] = None
         self._pending_new_iid: Optional[str] = None
         self._new_row_seq = 0
+        self._displayed_registered = False
 
         self._build_ui()
         self._derive_fa_exe()
@@ -544,19 +829,43 @@ class App(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _calculate_window_size(self) -> tuple[int, int]:
+        """根据当前字体计算初始窗口尺寸，跟随字体与 DPI 缩放。
+
+        - 宽度：约 110 个 "0" 字符宽，保证表格中路径不被过度压缩。
+        - 高度：约 42 行字体行高，保证别名表格能显示足够行数。
+        - 同时给出合理下限，避免小字体时窗口过小。
+        """
+        try:
+            font = tkfont.nametofont("TkDefaultFont")
+            line_height = font.metrics("linespace") or 16
+            char_width = font.measure("0") or 8
+        except (tk.TclError, AttributeError):
+            return 1000, 800
+        width = max(900, char_width * 110)
+        height = max(650, line_height * 42)
+        return width, height
+
     # ---- 构建界面 ----
     def _build_ui(self) -> None:
         try:
             style = ttk.Style(self)
             if "vista" in style.theme_names():
                 style.theme_use("vista")
+            # Treeview 行高显式跟随字体，避免缩放后行内容显示不全
+            try:
+                default_font = tkfont.nametofont("TkDefaultFont")
+                style.configure("Treeview",
+                                rowheight=default_font.metrics("linespace") + 6)
+            except (tk.TclError, AttributeError):
+                pass
         except tk.TclError:
             pass
 
         main = ttk.Frame(self, padding=10)
         main.pack(fill=tk.BOTH, expand=True)
 
-        # 路径设置
+        # 通用路径设置（两个标签页共用）
         path_frame = ttk.LabelFrame(main, text="路径设置", padding=(10, 6))
         path_frame.pack(fill=tk.X)
 
@@ -565,23 +874,30 @@ class App(tk.Tk):
         self.ci_exe_var = tk.StringVar(value=self.settings.get("ci_exe", ""))
         self.automations_dir_var = tk.StringVar(value="")
         self.subject_count_var = tk.StringVar(value="科目: 未加载")
+        self.reg_var = tk.StringVar(value="")
 
-        self._path_row(path_frame, 0, "FAConfig.ini", self.ini_var, None, browse_text="")
-        self._path_row(path_frame, 1, "ClassIsland.exe", self.ci_exe_var, self._browse_ci_exe, browse_text="选择...")
+        self._path_row(path_frame, 0, "FAConfig.ini", self.ini_var, None, browse_text="",
+                       readonly=True)
 
-        ttk.Label(path_frame, text="Automations 目录").grid(row=2, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(path_frame, textvariable=self.automations_dir_var, state="readonly").grid(
-            row=2, column=1, columnspan=2, sticky=tk.EW, padx=6, pady=3)
-        ttk.Label(path_frame, textvariable=self.subject_count_var, foreground="#555555").grid(
-            row=3, column=1, sticky=tk.W, padx=6)
+        reg_row = ttk.Frame(path_frame)
+        reg_row.grid(row=1, column=0, columnspan=3, sticky=tk.EW, pady=(4, 0))
+        ttk.Label(reg_row, text="注册状态:").pack(side=tk.LEFT)
+        ttk.Label(reg_row, textvariable=self.reg_var,
+                  foreground="#555555").pack(side=tk.LEFT, padx=6)
+        self.reg_button = ttk.Button(reg_row, text="注册", command=self._toggle_registration)
+        self.reg_button.pack(side=tk.RIGHT)
+        ttk.Button(reg_row, text="刷新", command=self._refresh_registration).pack(side=tk.RIGHT, padx=6)
         path_frame.columnconfigure(1, weight=1)
         path_frame.columnconfigure(2, weight=0)
 
-        # 别名编辑
-        alias_frame = ttk.LabelFrame(main, text="别名（英文名 → 路径）", padding=(10, 6))
-        alias_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        notebook = ttk.Notebook(main)
+        notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
-        button_bar = ttk.Frame(alias_frame)
+        # ---- 标签页：别名 ----
+        alias_tab = ttk.Frame(notebook, padding=(8, 8))
+        notebook.add(alias_tab, text="别名")
+
+        button_bar = ttk.Frame(alias_tab)
         button_bar.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(button_bar, text="新增", command=self._on_add).pack(side=tk.LEFT)
         ttk.Button(button_bar, text="删除", command=self._on_delete).pack(side=tk.LEFT, padx=6)
@@ -594,7 +910,7 @@ class App(tk.Tk):
         ttk.Checkbutton(button_bar, text="启用命令行参数", variable=self.enabled_var,
                         command=self._on_toggle_enabled).pack(side=tk.LEFT, padx=(16, 0))
 
-        tree_frame = ttk.Frame(alias_frame)
+        tree_frame = ttk.Frame(alias_tab)
         tree_frame.pack(fill=tk.BOTH, expand=True)
         self.tree = ttk.Treeview(tree_frame, columns=("name", "path"), show="headings", selectmode="browse")
         self.tree.heading("name", text="英文名")
@@ -607,37 +923,203 @@ class App(tk.Tk):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.bind("<Double-1>", self._on_tree_double_click)
 
-        # ClassIsland 自动化
-        ci_frame = ttk.LabelFrame(main, text="ClassIsland 自动化", padding=(10, 6))
-        ci_frame.pack(fill=tk.X, pady=(10, 0))
-        ci_buttons = ttk.Frame(ci_frame)
-        ci_buttons.pack(fill=tk.X, pady=(0, 6))
+        # ---- 标签页：ClassIsland ----
+        ci_tab = ttk.Frame(notebook, padding=(8, 8))
+        notebook.add(ci_tab, text="ClassIsland")
+
+        ci_path = ttk.LabelFrame(ci_tab, text="ClassIsland 路径", padding=(10, 6))
+        ci_path.pack(fill=tk.X)
+        self._path_row(ci_path, 0, "ClassIsland.exe", self.ci_exe_var, self._browse_ci_exe, browse_text="选择...")
+        ttk.Label(ci_path, text="Automations 目录").grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(ci_path, textvariable=self.automations_dir_var, state="readonly").grid(
+            row=1, column=1, columnspan=2, sticky=tk.EW, padx=6, pady=3)
+        ttk.Label(ci_path, textvariable=self.subject_count_var, foreground="#555555").grid(
+            row=2, column=1, sticky=tk.W, padx=6)
+        ci_path.columnconfigure(1, weight=1)
+        ci_path.columnconfigure(2, weight=0)
+
+        ci_buttons = ttk.Frame(ci_tab)
+        ci_buttons.pack(fill=tk.X, pady=(8, 6))
         ttk.Button(ci_buttons, text="生成并导入...", command=self._open_generate_dialog).pack(side=tk.LEFT)
         ttk.Button(ci_buttons, text="导入 JSON 文件...", command=self._import_json_file).pack(side=tk.LEFT, padx=8)
         ttk.Button(ci_buttons, text="重新定位", command=self._refresh_classisland).pack(side=tk.LEFT)
         ttk.Button(ci_buttons, text="强制关闭 ClassIsland", command=self._close_classisland).pack(side=tk.RIGHT)
         ttk.Button(ci_buttons, text="打开 ClassIsland", command=self._open_classisland).pack(side=tk.RIGHT, padx=8)
 
-        self.log_text = tk.Text(ci_frame, height=5, state=tk.DISABLED, wrap=tk.WORD,
+        self.log_text = tk.Text(ci_tab, height=8, state=tk.DISABLED, wrap=tk.WORD,
                                 background="#fafafa", relief=tk.FLAT)
-        self.log_text.pack(fill=tk.X)
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+
+        # ---- 标签页：FileAgent.ini ----
+        fa_tab = ttk.Frame(notebook, padding=(8, 8))
+        notebook.add(fa_tab, text="FileAgent.ini")
+
+        fa_frame = ttk.LabelFrame(
+            fa_tab, text="FileAgent.ini [Settings]（保存后 FileAgent 下次启动时生效）", padding=(10, 6))
+        fa_frame.pack(fill=tk.X)
+
+        self.fa_backup_dir_var = tk.StringVar(value="")
+        self.fa_backup_root_var = tk.StringVar(value="")
+        self.fa_extensions_var = tk.StringVar(value="")
+        self.fa_ena_path_var = tk.StringVar(value="")
+        self.fa_overwrite_var = tk.BooleanVar(value=True)
+        self.fa_open_copy_var = tk.BooleanVar(value=False)
+        self.fa_add_timestamp_var = tk.BooleanVar(value=True)
+
+        ttk.Label(fa_frame, text="备份目录").grid(row=0, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(fa_frame, textvariable=self.fa_backup_dir_var).grid(
+            row=0, column=1, sticky=tk.EW, padx=6, pady=3)
+        ttk.Button(fa_frame, text="浏览...", command=self._browse_fileagent_backup_dir).grid(
+            row=0, column=2, pady=3)
+
+        ttk.Label(fa_frame, text="跳过根目录").grid(row=1, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(fa_frame, textvariable=self.fa_backup_root_var).grid(
+            row=1, column=1, columnspan=2, sticky=tk.EW, padx=6, pady=3)
+
+        ttk.Label(fa_frame, text="扩展名").grid(row=2, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(fa_frame, textvariable=self.fa_extensions_var).grid(
+            row=2, column=1, columnspan=2, sticky=tk.EW, padx=6, pady=3)
+
+        ttk.Label(fa_frame, text="ENA 路径").grid(row=3, column=0, sticky=tk.W, pady=3)
+        ttk.Entry(fa_frame, textvariable=self.fa_ena_path_var).grid(
+            row=3, column=1, sticky=tk.EW, padx=6, pady=3)
+        ttk.Button(fa_frame, text="浏览...", command=self._browse_fileagent_ena_path).grid(
+            row=3, column=2, pady=3)
+
+        fa_checks = ttk.Frame(fa_frame)
+        fa_checks.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(6, 0))
+        ttk.Checkbutton(fa_checks, text="覆盖已有备份", variable=self.fa_overwrite_var).pack(side=tk.LEFT)
+        ttk.Checkbutton(fa_checks, text="打开副本", variable=self.fa_open_copy_var).pack(side=tk.LEFT, padx=12)
+        ttk.Checkbutton(fa_checks, text="文件名添加时间戳",
+                        variable=self.fa_add_timestamp_var).pack(side=tk.LEFT)
+        fa_frame.columnconfigure(1, weight=1)
+        fa_frame.columnconfigure(2, weight=0)
+
+        fa_buttons = ttk.Frame(fa_tab)
+        fa_buttons.pack(fill=tk.X, pady=(8, 6))
+        ttk.Button(fa_buttons, text="保存", command=self._save_fileagent_settings).pack(side=tk.LEFT)
+        ttk.Button(fa_buttons, text="重新加载", command=self._load_fileagent_settings).pack(side=tk.LEFT, padx=8)
+
+        ttk.Label(
+            fa_tab,
+            text="说明：\n"
+                 "· 备份目录支持相对路径（相对于 FileAgent.exe），例如 .\\AutoSaveBackup。\n"
+                 "· 跳过根目录可填多个路径，用分号或英文逗号分隔；留空表示不跳过任何目录。\n"
+                 "· 扩展名用英文逗号分隔，可带或不带前导点。\n"
+                 "· ENA 路径：指定一个 exe，备份成功且文件有更新时以 -toast 弹出通知；留空则不通知。",
+            foreground="#666666", justify=tk.LEFT).pack(anchor=tk.W, pady=(4, 0))
 
         # 状态栏
         status_frame = ttk.Frame(self, padding=(10, 4))
         status_frame.pack(fill=tk.X, side=tk.BOTTOM)
         self.status_var = tk.StringVar(value="")
         ttk.Label(status_frame, textvariable=self.status_var).pack(side=tk.LEFT)
+        self._refresh_registration()
+        self._load_fileagent_settings()
+        self._refresh_classisland()
 
     def _path_row(self, parent: ttk.LabelFrame, row: int, label: str,
-                  variable: tk.StringVar, command, browse_text: str) -> None:
+                  variable: tk.StringVar, command, browse_text: str,
+                  readonly: bool = False) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky=tk.W, pady=3)
-        ttk.Entry(parent, textvariable=variable).grid(row=row, column=1, sticky=tk.EW, padx=6, pady=3)
+        entry = ttk.Entry(parent, textvariable=variable)
+        if readonly:
+            entry.configure(state="readonly")
+        entry.grid(row=row, column=1, sticky=tk.EW, padx=6, pady=3)
         if command is not None:
             ttk.Button(parent, text=browse_text, command=command).grid(row=row, column=2, pady=3)
 
     def _derive_fa_exe(self) -> None:
         """FAConfig.exe 与 FAConfig.ini 同目录，无需手动选择。"""
         self.fa_exe_var.set(str(Path(self.store.path).with_name("FAConfig.exe")))
+
+    # ---- FileAgent.ini ----
+    def _load_fileagent_settings(self) -> None:
+        try:
+            values = self.fa_store.load()
+        except RuntimeError as error:
+            messagebox.showerror("错误", str(error))
+            self.log(str(error))
+            return
+        self.fa_backup_dir_var.set(str(values["BackupDir"]))
+        self.fa_backup_root_var.set(str(values["BackupRoot"]))
+        self.fa_extensions_var.set(str(values["Extensions"]))
+        self.fa_ena_path_var.set(str(values["EnaPath"]))
+        self.fa_overwrite_var.set(bool(values["Overwrite"]))
+        self.fa_open_copy_var.set(bool(values["OpenCopy"]))
+        self.fa_add_timestamp_var.set(bool(values["AddTimestamp"]))
+        self.log(f"已读取 FileAgent.ini：{self.fa_store.path}")
+
+    def _save_fileagent_settings(self) -> None:
+        values = {
+            "BackupDir": self.fa_backup_dir_var.get().strip(),
+            "BackupRoot": self.fa_backup_root_var.get().strip(),
+            "Extensions": self.fa_extensions_var.get().strip(),
+            "EnaPath": self.fa_ena_path_var.get().strip(),
+            "Overwrite": self.fa_overwrite_var.get(),
+            "OpenCopy": self.fa_open_copy_var.get(),
+            "AddTimestamp": self.fa_add_timestamp_var.get(),
+        }
+        try:
+            self.fa_store.save(values)
+        except RuntimeError as error:
+            messagebox.showerror("保存失败", str(error))
+            self.log(str(error))
+            return
+        self.log(f"已保存 FileAgent.ini：BackupDir={values['BackupDir'] or '(默认)'}；"
+                 f"EnaPath={values['EnaPath'] or '(不通知)'}；"
+                 f"Overwrite={values['Overwrite']}；OpenCopy={values['OpenCopy']}；"
+                 f"AddTimestamp={values['AddTimestamp']}")
+
+    def _browse_fileagent_backup_dir(self) -> None:
+        current = self.fa_backup_dir_var.get().strip()
+        initial = Path(current) if current and Path(current).is_dir() else Path(self.store.path).parent
+        path = filedialog.askdirectory(title="选择备份存储目录", initialdir=str(initial))
+        if path:
+            self.fa_backup_dir_var.set(path)
+
+    def _browse_fileagent_ena_path(self) -> None:
+        current = self.fa_ena_path_var.get().strip()
+        initial_dir = str(Path(current).parent) if current else str(Path(self.store.path).parent)
+        path = filedialog.askopenfilename(
+            title="选择备份成功后弹出通知的程序",
+            initialdir=initial_dir,
+            filetypes=[("可执行文件", "*.exe")])
+        if path:
+            self.fa_ena_path_var.set(path)
+
+    # ---- 注册状态 ----
+    def _refresh_registration(self) -> None:
+        exe = fileagent_exe()
+        if not exe.exists():
+            self.reg_var.set(f"未找到 {exe}")
+            self.reg_button.configure(text="注册", state=tk.DISABLED)
+            self._displayed_registered = False
+            return
+        registered = is_registered()
+        self._displayed_registered = registered
+        self.reg_var.set("已注册（FileAgent 已安装）" if registered else "未注册（FileAgent 未安装）")
+        self.reg_button.configure(text="卸载注册" if registered else "注册", state=tk.NORMAL)
+
+    def _toggle_registration(self) -> None:
+        exe = fileagent_exe()
+        if not exe.exists():
+            messagebox.showwarning("提示", f"未找到 FileAgent.exe：\n{exe}\n请将其放到 FAConfig.ini 所在目录。")
+            return
+        actual = is_registered()
+        # 多个实例同时使用时，界面显示的状态可能已过期，
+        # 此时只刷新状态，避免误执行相反的操作（例如本想注册却触发了卸载）。
+        if actual != self._displayed_registered:
+            self._refresh_registration()
+            messagebox.showinfo("提示", "注册状态已被其他程序修改，已刷新为最新状态，请确认后重新操作。")
+            return
+        registered = actual
+        ok = unregister_faconfig() if registered else register_faconfig()
+        if not ok:
+            messagebox.showerror("错误", "卸载注册失败。" if registered else "注册失败。")
+            return
+        self.log("已卸载注册。" if registered else "已注册 FAConfig。")
+        self._refresh_registration()
 
     # ---- 加载 / 保存 ----
     def _load(self) -> None:
@@ -765,7 +1247,7 @@ class App(tk.Tk):
 
         if column_index == 0:
             if not value:
-                messagebox.showwarning("提示", "英文名不能为空。")
+                # 英文名为空：直接取消本次编辑
                 self._remove_pending_row(iid)
                 return
             if "=" in value or "\n" in value:
@@ -923,30 +1405,28 @@ class App(tk.Tk):
         self.log(f"已启动 ClassIsland: {exe}")
 
     def _close_classisland(self) -> None:
-        exe_text = self.ci_exe_var.get().strip()
-        names: list[str] = []
-        if exe_text:
-            names.append(Path(exe_text).stem)
-        for name in ("ClassIsland", "ClassIsland.Desktop"):
-            if name not in names:
-                names.append(name)
+        # taskkill 需要等待目标进程退出，放到后台线程执行，避免阻塞界面
+        self.log("正在强制关闭 ClassIsland...")
+        threading.Thread(target=self._close_classisland_worker, daemon=True).start()
 
-        stopped: list[str] = []
-        for name in names:
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/F", "/IM", f"{name}.exe"],
-                    capture_output=True, text=True, timeout=5,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                continue
-            if result.returncode == 0:
-                stopped.append(name)
-
-        if stopped:
-            self.log(f"已强制结束进程: {', '.join(stopped)}")
+    def _close_classisland_worker(self) -> None:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/F", "/IM", "ClassIsland.Desktop.exe"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            message = f"强制关闭 ClassIsland 失败：{error}"
         else:
-            self.log("未发现正在运行的 ClassIsland 进程")
+            if result.returncode == 0:
+                message = "已强制结束进程: ClassIsland.Desktop.exe"
+            else:
+                message = "未发现正在运行的 ClassIsland.Desktop.exe 进程"
+        # 窗口可能在后台线程执行期间被关闭，此时 after 会抛异常
+        try:
+            self.after(0, lambda: self.log(message))
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _import_json_file(self) -> None:
         target_dir = self.automations_dir_var.get().strip()
@@ -973,7 +1453,11 @@ class App(tk.Tk):
         target = Path(target_dir) / "FileAgent.json"
         if not messagebox.askyesno("确认", f"将覆盖：\n{target}\n\n原文件会自动备份，是否继续？"):
             return
-        backup = write_automations(target, items)
+        try:
+            backup = write_automations(target, items)
+        except OSError as error:
+            messagebox.showerror("导入失败", f"无法写入：\n{target}\n\n{error}")
+            return
         self.log(f"已导入 {len(items)} 条自动化: {target}")
         if backup:
             self.log(f"原文件已备份: {backup.name}")
@@ -996,6 +1480,9 @@ class App(tk.Tk):
                     subject_names[alias] = name
                     break
         self.settings["subject_map"] = subject_names
+        self.settings["ci_exe"] = self.ci_exe_var.get().strip()
+        # 立即落盘，避免程序异常退出时丢失映射
+        save_settings(self.settings)
 
     def _on_close(self) -> None:
         self._close_cell_editor(False)
@@ -1005,6 +1492,8 @@ class App(tk.Tk):
 
 
 def main() -> int:
+    # 必须在创建任何窗口（包括 Tk 根窗口）之前启用 DPI 感知
+    set_dpi_awareness()
     try:
         app = App()
     except Exception as error:  # 兜底提示，避免静默退出

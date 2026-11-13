@@ -1,4 +1,4 @@
-/*
+ï»¿/*
  * Copyright 2026 howdy213
  *
  * This file is part of FileAgent.
@@ -16,7 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with FileAgent. If not, see <https://www.gnu.org/licenses/>.
  *
- *  ÊµÏÖÅäÖÃ¼ÓÔØ£¬¶¨ÒåÈ«¾Ö±äÁ¿
+ *  å®ç°é…ç½®åŠ è½½ï¼Œå®šä¹‰å…¨å±€å˜é‡
  */
 #include "FileAgent.h"
 #include "WinUtils/INI.h"
@@ -26,7 +26,7 @@ using namespace std;
 using namespace WinUtils;
 namespace fs = filesystem;
 
-// È«¾Ö±äÁ¿¶¨Òå
+// å…¨å±€å˜é‡å®šä¹‰
 WinUtils::Logger logger(APP_NAME);
 vector<wstring> g_skipBackupRoots;
 wstring g_backupStorePath;
@@ -34,6 +34,7 @@ vector<wstring> g_extensions = DEFAULT_EXTENSIONS;
 bool g_openCopy = false;
 bool g_overwrite = true;
 bool g_addTimestamp = true;
+wstring g_enaPath;
 
 static wstring JoinPaths(const vector<wstring>& paths) {
 	wstring result;
@@ -51,10 +52,11 @@ void LoadConfig() {
 
 	if (!fs::exists(iniPath)) {
 		data[TS("Settings")][TS("Overwrite")] = TS("true");
-		data[TS("Settings")][TS("BackupRoot")] = TS("");   // ¿Õ±íÊ¾²»Ìø¹ı
+		data[TS("Settings")][TS("BackupRoot")] = TS("");   // ç©ºè¡¨ç¤ºä¸è·³è¿‡
 		data[TS("Settings")][TS("BackupDir")] = (wstring)L".\\" + DEFAULT_BACKUP_DIR_NAME;
 		data[TS("Settings")][TS("OpenCopy")] = TS("false");
 		data[TS("Settings")][TS("AddTimestamp")] = TS("true");
+		data[TS("Settings")][TS("EnaPath")] = TS("");
 		wstring extStr;
 		for (const auto& ext : DEFAULT_EXTENSIONS) {
 			if (!extStr.empty()) extStr += L",";
@@ -62,26 +64,28 @@ void LoadConfig() {
 		}
 		data[TS("Settings")][TS("Extensions")] = extStr;
 		ini.generate(data, true);
-		logger.DLog(LogLevel::Info, L"´´½¨Ä¬ÈÏÅäÖÃÎÄ¼ş: " + iniPath.wstring());
+		logger.DLog(LogLevel::Info, L"åˆ›å»ºé»˜è®¤é…ç½®æ–‡ä»¶: " + iniPath.wstring());
 
-		// ÉèÖÃÄ¬ÈÏÖµ
+		// è®¾ç½®é»˜è®¤å€¼
 		g_overwrite = true;
 		g_skipBackupRoots.clear();
 		g_backupStorePath = (GetCurrentProcessFSDir() / DEFAULT_BACKUP_DIR_NAME).wstring();
 		g_extensions = DEFAULT_EXTENSIONS;
 		g_openCopy = false;
 		g_addTimestamp = true;
+		g_enaPath.clear();
 		return;
 	}
 
 	if (!ini.read(data)) {
-		logger.DLog(LogLevel::Error, L"¶ÁÈ¡ÅäÖÃÎÄ¼şÊ§°Ü£¬Ê¹ÓÃÄ¬ÈÏÅäÖÃ£¨²»Ìø¹ıÈÎºÎÄ¿Â¼£©");
+		logger.DLog(LogLevel::Error, L"è¯»å–é…ç½®æ–‡ä»¶å¤±è´¥ï¼Œä½¿ç”¨é»˜è®¤é…ç½®ï¼ˆä¸è·³è¿‡ä»»ä½•ç›®å½•ï¼‰");
 		g_overwrite = true;
 		g_skipBackupRoots.clear();
 		g_backupStorePath = (GetCurrentProcessFSDir() / DEFAULT_BACKUP_DIR_NAME).wstring();
 		g_extensions = DEFAULT_EXTENSIONS;
 		g_openCopy = false;
 		g_addTimestamp = true;
+		g_enaPath.clear();
 		return;
 	}
 
@@ -111,10 +115,10 @@ void LoadConfig() {
 			if (delim == wstring::npos) break;
 			start = delim + 1;
 		}
-		logger.DLog(LogLevel::Info, L"ÊÖ¶¯ÉèÖÃÌø¹ı¸ùÄ¿Â¼: " + JoinPaths(g_skipBackupRoots));
+		logger.DLog(LogLevel::Info, L"æ‰‹åŠ¨è®¾ç½®è·³è¿‡æ ¹ç›®å½•: " + JoinPaths(g_skipBackupRoots));
 	}
 	else {
-		logger.DLog(LogLevel::Info, L"BackupRoot Îª¿Õ£¬²»Ìø¹ıÈÎºÎÄ¿Â¼");
+		logger.DLog(LogLevel::Info, L"BackupRoot ä¸ºç©ºï¼Œä¸è·³è¿‡ä»»ä½•ç›®å½•");
 	}
 
 	// ---------- BackupDir ----------
@@ -131,6 +135,20 @@ void LoadConfig() {
 
 	// ---------- AddTimestamp ----------
 	g_addTimestamp = settings.get_as<bool>(TS("AddTimestamp"), true);
+
+	// ---------- EnaPathï¼ˆå¤‡ä»½æˆåŠŸåçš„é€šçŸ¥ç¨‹åºï¼‰ ----------
+	wstring enaPath = settings.get(TS("EnaPath"));
+	g_enaPath.clear();
+	if (!enaPath.empty()) {
+		// ç›¸å¯¹è·¯å¾„æŒ‰ FileAgent.exe æ‰€åœ¨ç›®å½•è§£æï¼Œåªæ¥å—å·²å­˜åœ¨çš„ exe
+		fs::path resolved = ResolveFSPath(enaPath, GetCurrentProcessFSDir());
+		if (fs::exists(resolved) && _wcsicmp(resolved.extension().c_str(), L".exe") == 0) {
+			g_enaPath = resolved.wstring();
+		}
+		else {
+			logger.DLog(LogLevel::Warn, L"EnaPath å¿…é¡»æŒ‡å‘å·²å­˜åœ¨çš„ exeï¼Œå·²å¿½ç•¥: " + enaPath);
+		}
+	}
 
 	// ---------- Extensions ----------
 	wstring extStr = settings.get(TS("Extensions"));
@@ -152,8 +170,8 @@ void LoadConfig() {
 	}
 	if (g_extensions.empty()) g_extensions = DEFAULT_EXTENSIONS;
 
-	logger.DLog(LogLevel::Info, L"ÅäÖÃ¼ÓÔØ³É¹¦£¬Ìø¹ı¸ùÄ¿Â¼ÁĞ±í: " + JoinPaths(g_skipBackupRoots) +
-		L"£¬±¸·İ´æ´¢Ä¿Â¼: " + g_backupStorePath +
-		L"£¬´ò¿ª¸±±¾: " + (g_openCopy ? L"true" : L"false") +
-		L"£¬Ìí¼ÓÊ±¼ä´Á: " + (g_addTimestamp ? L"true" : L"false"));
+	logger.DLog(LogLevel::Info, L"é…ç½®åŠ è½½æˆåŠŸï¼Œè·³è¿‡æ ¹ç›®å½•åˆ—è¡¨: " + JoinPaths(g_skipBackupRoots) +
+		L"ï¼Œå¤‡ä»½å­˜å‚¨ç›®å½•: " + g_backupStorePath +
+		L"ï¼Œæ‰“å¼€å‰¯æœ¬: " + (g_openCopy ? L"true" : L"false") +
+		L"ï¼Œæ·»åŠ æ—¶é—´æˆ³: " + (g_addTimestamp ? L"true" : L"false"));
 }
